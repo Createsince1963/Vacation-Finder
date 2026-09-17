@@ -1,4 +1,5 @@
-"""HTTP clients for the two free, no-API-key holiday data sources.
+"""HTTP clients for the two free, no-API-key holiday data sources, backed
+by a persistent local cache (see ``holiday_cache.py``).
 
 - Nager.Date (https://date.nager.at) - public holidays only.
 - OpenHolidays API (https://openholidaysapi.org) - public holidays, school
@@ -6,6 +7,17 @@
 
 Both are open, unauthenticated REST APIs. No API key is required or used
 anywhere in this module.
+
+Caching strategy: check the local cache first; on a miss (or stale data),
+hit the network. If the network call fails and there's ANY cached data for
+that key - even past its staleness window - serve that instead of nothing
+(better a slightly outdated calendar than a blank one while offline). Only
+if there's no cached fallback at all does the failure propagate to the
+caller (``workers.HolidayFetchWorker`` turns that into the UI's "Error
+loading data" message - see the code review finding this fixes: the
+previous version silently swallowed every network error inside this
+module and returned an empty list indistinguishable from "this country
+really has no holidays", so that error path was effectively dead code).
 """
 
 from __future__ import annotations
@@ -14,6 +26,7 @@ import logging
 
 import requests
 
+import holiday_cache
 from constants import NAGER_BASE_URL, OPENHOLIDAYS_BASE_URL
 from models import Holiday, SchoolHoliday, Subdivision
 
@@ -24,6 +37,10 @@ REQUEST_TIMEOUT_SECONDS = 15
 
 def fetch_subdivisions(country_code: str) -> list[Subdivision]:
     """Return the states/regions of a country (e.g. German Bundeslaender)."""
+    cached = holiday_cache.get_cached_subdivisions(country_code)
+    if cached is not None:
+        return cached
+
     url = f"{OPENHOLIDAYS_BASE_URL}/Subdivisions"
     try:
         resp = requests.get(
@@ -35,7 +52,11 @@ def fetch_subdivisions(country_code: str) -> list[Subdivision]:
         raw = resp.json()
     except requests.RequestException as exc:
         logger.warning("fetch_subdivisions(%s) failed: %s", country_code, exc)
-        return []
+        stale = holiday_cache.get_cached_subdivisions(country_code, max_age_days=None)
+        if stale is not None:
+            logger.info("Serving stale cached subdivisions for %s after network failure", country_code)
+            return stale
+        raise
 
     subdivisions: list[Subdivision] = []
     for item in raw:
@@ -48,6 +69,7 @@ def fetch_subdivisions(country_code: str) -> list[Subdivision]:
                 name=text,
             )
         )
+    holiday_cache.store_subdivisions(country_code, subdivisions)
     return subdivisions
 
 
@@ -57,6 +79,10 @@ def fetch_school_holidays(
     subdivision_code: str | None = None,
 ) -> list[SchoolHoliday]:
     """Return school holidays for a country/year, optionally scoped to a subdivision."""
+    cached = holiday_cache.get_cached_school_holidays(country_code, year, subdivision_code)
+    if cached is not None:
+        return cached
+
     url = f"{OPENHOLIDAYS_BASE_URL}/SchoolHolidays"
     params = {
         "countryIsoCode": country_code,
@@ -73,7 +99,16 @@ def fetch_school_holidays(
         raw = resp.json()
     except requests.RequestException as exc:
         logger.warning("fetch_school_holidays(%s, %s) failed: %s", country_code, year, exc)
-        return []
+        stale = holiday_cache.get_cached_school_holidays(
+            country_code, year, subdivision_code, max_age_days=None
+        )
+        if stale is not None:
+            logger.info(
+                "Serving stale cached school holidays for %s/%s after network failure",
+                country_code, year,
+            )
+            return stale
+        raise
 
     result: list[SchoolHoliday] = []
     for item in raw:
@@ -88,6 +123,7 @@ def fetch_school_holidays(
                 name=text,
             )
         )
+    holiday_cache.store_school_holidays(country_code, year, subdivision_code, result)
     return result
 
 
@@ -107,21 +143,40 @@ def fetch_country_holidays(
     ``fetch_school_holidays`` but currently unused - callers should filter
     the returned list themselves with :func:`holiday_applies_to_subdivision`
     once the desired subdivision is known (see ``MainWindow._visible_holidays``).
+
+    The cache key includes `source`: Nager.Date and OpenHolidays can
+    disagree slightly on names/coverage for the same country and year, so
+    toggling the source in the UI must not keep serving the other
+    source's cached data.
     """
-    if source == "nager":
-        return _fetch_nager_holidays(country_code, year)
-    return _fetch_openholidays_holidays(country_code, year)
+    cached = holiday_cache.get_cached_holidays(country_code, year, source)
+    if cached is not None:
+        return cached
+
+    try:
+        if source == "nager":
+            holidays = _fetch_nager_holidays(country_code, year)
+        else:
+            holidays = _fetch_openholidays_holidays(country_code, year)
+    except requests.RequestException:
+        stale = holiday_cache.get_cached_holidays(country_code, year, source, max_age_days=None)
+        if stale is not None:
+            logger.info(
+                "Serving stale cached holidays for %s/%s/%s after network failure",
+                country_code, year, source,
+            )
+            return stale
+        raise
+
+    holiday_cache.store_holidays(country_code, year, source, holidays)
+    return holidays
 
 
 def _fetch_nager_holidays(country_code: str, year: int) -> list[Holiday]:
     url = f"{NAGER_BASE_URL}/PublicHolidays/{year}/{country_code}"
-    try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
-        resp.raise_for_status()
-        raw = resp.json()
-    except requests.RequestException as exc:
-        logger.warning("Nager.Date fetch failed for %s/%s: %s", year, country_code, exc)
-        return []
+    resp = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+    resp.raise_for_status()
+    raw = resp.json()
 
     holidays: list[Holiday] = []
     for item in raw:
@@ -149,13 +204,9 @@ def _fetch_openholidays_holidays(country_code: str, year: int) -> list[Holiday]:
         "validFrom": f"{year}-01-01",
         "validTo": f"{year}-12-31",
     }
-    try:
-        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
-        resp.raise_for_status()
-        raw = resp.json()
-    except requests.RequestException as exc:
-        logger.warning("OpenHolidays fetch failed for %s/%s: %s", year, country_code, exc)
-        return []
+    resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+    resp.raise_for_status()
+    raw = resp.json()
 
     holidays: list[Holiday] = []
     for item in raw:

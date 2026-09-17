@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QDate, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 import export
+import holiday_cache
 from api_client import holiday_applies_to_subdivision
 from calendar_logic import (
     DEFAULT_MAX_BRIDGE_GAP,
@@ -44,7 +46,14 @@ from calendar_logic import (
     vacation_day_count,
     working_days_in_year,
 )
-from constants import APP_TITLE, COUNTRIES, COUNTRY_NAME_BY_CODE, YEARS
+from constants import (
+    APP_TITLE,
+    COUNTRIES,
+    COUNTRY_NAME_BY_CODE,
+    OFFLINE_DEFAULT_COUNTRIES,
+    YEARS,
+    countries_by_continent,
+)
 from entitlement import (
     YearBudget,
     YearEntitlement,
@@ -59,6 +68,8 @@ from storage import load_vacations, save_vacations
 from user_config import UserConfig, load_user_config, save_user_config
 from vacation_dialog import VacationDialog
 from workers import start_holiday_fetch
+
+logger = logging.getLogger(__name__)
 
 # From September onward, silently prefetch next year's holiday data in the
 # background so it is already cached by the time the automatic year
@@ -132,6 +143,9 @@ class MainWindow(QMainWindow):
         self._fetch_worker = None
         self._prefetch_thread = None
         self._prefetch_worker = None
+        self._offline_prefetch_thread = None
+        self._offline_prefetch_worker = None
+        self._offline_prefetch_queue: list[tuple[str, int]] = []
         self._last_known_today = date.today()
         # True while selected_year tracks "whatever the real-world current
         # year is" (the normal, default state). Set to False the moment the
@@ -151,6 +165,13 @@ class MainWindow(QMainWindow):
         # Also run once at startup (covers: app opened for the first time
         # after Jan 1, or opened in September+ with no prefetch cached yet).
         self._check_year_rollover_and_prefetch()
+
+        # Warm the on-disk cache for a fixed set of "offline default"
+        # countries, so the app still has usable holiday data for these if
+        # it is ever opened without a network connection - not just for
+        # whatever country happened to be selected last. Best-effort,
+        # sequential (one request at a time, politely), never blocks the UI.
+        self._start_offline_default_prefetch()
 
     # ------------------------------------------------------------------
     # i18n
@@ -185,16 +206,41 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
 
+    @staticmethod
+    def _populate_country_combo(combo: QComboBox, *, include_none: bool) -> None:
+        """Fill a country QComboBox grouped by continent, with a bold,
+        non-selectable continent header row above each group (best
+        performance approach for >90 items: no extra network/DB calls
+        involved, this is purely a static-data grouping of the same
+        COUNTRIES list already held in memory - so there's no reason not
+        to always show the friendlier grouped view)."""
+        model = QStandardItemModel(combo)
+        if include_none:
+            none_item = QStandardItem("None")
+            none_item.setData(None, Qt.ItemDataRole.UserRole)
+            model.appendRow(none_item)
+        for continent, countries in countries_by_continent():
+            header_item = QStandardItem(continent)
+            header_item.setFlags(Qt.ItemFlag.NoItemFlags)  # not selectable/enabled
+            font = header_item.font()
+            font.setBold(True)
+            header_item.setFont(font)
+            model.appendRow(header_item)
+            for country in countries:
+                item = QStandardItem(f"    {country['name']}")
+                item.setData(country["code"], Qt.ItemDataRole.UserRole)
+                model.appendRow(item)
+        combo.setModel(model)
+
     def _build_toolbar(self) -> QHBoxLayout:
         row = QHBoxLayout()
 
         self._label_country = QLabel(self._tr("toolbar_country"))
         row.addWidget(self._label_country)
         self.country_combo = QComboBox()
-        for c in COUNTRIES:
-            self.country_combo.addItem(c["name"], c["code"])
+        self._populate_country_combo(self.country_combo, include_none=False)
         self.country_combo.setCurrentIndex(
-            [c["code"] for c in COUNTRIES].index(self.selected_country)
+            self.country_combo.findData(self.selected_country)
         )
         self.country_combo.currentIndexChanged.connect(self._on_country_changed)
         row.addWidget(self.country_combo)
@@ -209,9 +255,7 @@ class MainWindow(QMainWindow):
         self._label_compare_with = QLabel(self._tr("toolbar_compare_with"))
         row.addWidget(self._label_compare_with)
         self.country2_combo = QComboBox()
-        self.country2_combo.addItem("None", None)
-        for c in COUNTRIES:
-            self.country2_combo.addItem(c["name"], c["code"])
+        self._populate_country_combo(self.country2_combo, include_none=True)
         self.country2_combo.currentIndexChanged.connect(self._on_country2_changed)
         row.addWidget(self.country2_combo)
 
@@ -678,6 +722,15 @@ class MainWindow(QMainWindow):
             if next_year not in self.holidays_by_year and self._prefetch_thread is None:
                 self._start_prefetch_next_year(next_year)
 
+        # 3) Retention: keep the on-disk cache (holiday_cache.py) bounded to
+        # "current year + next year" as requested - drop anything older so
+        # the cache doesn't grow forever across app restarts and year
+        # rollovers. Cheap (a couple of DELETEs), safe to run on every check.
+        try:
+            holiday_cache.prune_to_years({today.year, today.year + 1})
+        except Exception as exc:  # pragma: no cover - pruning must never crash the app
+            logger.warning("holiday_cache.prune_to_years failed: %s", exc)
+
     def _start_prefetch_next_year(self, year: int) -> None:
         self._prefetch_thread, self._prefetch_worker = start_holiday_fetch(
             self,
@@ -711,6 +764,65 @@ class MainWindow(QMainWindow):
         # user-initiated action. It will simply be retried on the next
         # rollover-check tick (still not cached, still >= September).
         pass
+
+    # ------------------------------------------------------------------
+    # Offline-default-country prefetch (warms holiday_cache.py for a fixed
+    # set of countries so the app has usable data if opened offline - see
+    # constants.OFFLINE_DEFAULT_COUNTRIES)
+    # ------------------------------------------------------------------
+    def _start_offline_default_prefetch(self) -> None:
+        year = date.today().year
+        already_covered = {(self.selected_country, self.selected_year)}
+        self._offline_prefetch_queue = [
+            (code, year)
+            for code in OFFLINE_DEFAULT_COUNTRIES
+            if (code, year) not in already_covered
+        ]
+        self._advance_offline_prefetch()
+
+    def _advance_offline_prefetch(self) -> None:
+        if not self._offline_prefetch_queue:
+            self._offline_prefetch_thread = None
+            self._offline_prefetch_worker = None
+            return
+        country, year = self._offline_prefetch_queue.pop(0)
+        self._offline_prefetch_thread, self._offline_prefetch_worker = start_holiday_fetch(
+            self,
+            country,
+            None,  # no comparison country - just warming the cache
+            year,
+            self.source,
+            None,  # nationwide only for the cache; subdivision filtering is client-side anyway
+            fetch_subdivisions=False,
+            on_finished=lambda h, sh, _subs, c=country, y=year: self._on_offline_prefetch_finished(c, y, h, sh),
+            on_failed=self._on_offline_prefetch_failed,
+        )
+        # One request at a time, not all 7-8 in parallel - politer to the
+        # free APIs, and each fetch_country_holidays() call already stores
+        # its own result to holiday_cache.py, so there's nothing else to
+        # wait for before starting the next one.
+        self._offline_prefetch_thread.finished.connect(self._advance_offline_prefetch)
+
+    def _on_offline_prefetch_finished(
+        self, country: str, year: int, holidays: list[Holiday], school_holidays: list[SchoolHoliday]
+    ) -> None:
+        logger.info(
+            "Offline-default prefetch cached %s/%s (%d holidays, %d school holidays)",
+            country, year, len(holidays), len(school_holidays),
+        )
+        # Only worth merging into the in-memory dict if it happens to match
+        # what's currently on screen - otherwise holiday_cache.py alone is
+        # the point (it's what the offline fallback in api_client.py reads).
+        if country == self.selected_country and year == self.selected_year:
+            self.holidays_by_year[year] = holidays
+            self.school_holidays_by_year[year] = school_holidays
+
+    def _on_offline_prefetch_failed(self, message: str) -> None:
+        # Silent by design, same reasoning as _on_prefetch_failed - this is
+        # a background warm-up. If it failed because there's no network
+        # right now, that's exactly the situation this prefetch exists to
+        # prepare for next time, not something to bother the user about.
+        logger.info("Offline-default prefetch: one country failed (%s) - continuing queue", message)
 
     # ------------------------------------------------------------------
     # Derived data helpers
@@ -1098,7 +1210,7 @@ class MainWindow(QMainWindow):
         abort the process. Found via a headless test run during
         development (see project feedback log).
         """
-        for thread in (self._fetch_thread, self._prefetch_thread):
+        for thread in (self._fetch_thread, self._prefetch_thread, self._offline_prefetch_thread):
             try:
                 if thread is not None and thread.isRunning():
                     thread.quit()
