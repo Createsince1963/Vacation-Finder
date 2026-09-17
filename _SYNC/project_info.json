@@ -1,0 +1,30 @@
+{
+  "project_id": "APK_Vacation_Finder",
+  "project_name": "Thomas Vacation Finder (PySide6/Qt6 -> Android APK)",
+  "created": "2026-09-17",
+  "version": "v0.1-dev",
+  "status": "initialized",
+  "path": "C:\\Users\\mail\\AI_Coworker_Claude\\APK Vacation-Finder",
+  "reference_source": "AI Google code/ (React/Vite/AI-Studio web app, siehe README.md dort fuer Original-Feature-Review)",
+  "target_stack": {
+    "gui": "PySide6/Qt6 (QtWidgets)",
+    "desktop_build": "PyInstaller via zentrales Tools_Central Python (WinPython 3.13)",
+    "android_build": "pyside6-android-deploy (Tools_Central\\pyside6-android-deploy, WSL2/Linux)"
+  },
+  "scope_v1": [
+    "Kalender-Kernfunktionen: Jahr-/Monats-/Listenansicht, Feiertage (Nager.Date + OpenHolidays API, kein API-Key), Bridge-Days, KW-Anzeige, Laendervergleich, Suche",
+    "Urlaubsplanung mit Arbeitstage-Berechnung, lokale Speicherung (JSON/SQLite statt localStorage)",
+    "Export: Excel (.xlsx) und iCal (.ics)"
+  ],
+  "explicitly_out_of_scope_v1": [
+    "Gemini-KI-Chat-Assistent (kein API-Key im Client, ggf. spaeter separat/serverseitig)"
+  ],
+  "toolchain_refs": {
+    "central_python": "C:\\Users\\mail\\AI_Coworker_Claude\\Tools_Central\\Python\\python\\python.exe",
+    "android_deploy_toolchain": "C:\\Users\\mail\\AI_Coworker_Claude\\Tools_Central\\pyside6-android-deploy",
+    "android_sdk_gradle_native_ref": "C:\\Users\\mail\\AI_Coworker_Claude\\Padel Buchung\\.android-build (noch nicht nach Tools_Central\\Android-Build verschoben)"
+  },
+  "code_location": "BIN\\versions\\v0.1\\PyModul",
+  "sync_path": "C:\\Users\\mail\\AI_Coworker_Claude\\APK Vacation-Finder\\_SYNC",
+  "naming_prefix": "APK_Vacation_Finder"
+}

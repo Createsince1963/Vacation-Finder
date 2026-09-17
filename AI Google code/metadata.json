@@ -1,0 +1,5 @@
+{
+  "name": "Thomas Vacation Finder (for Exyte......)",
+  "description": "Identify non-working days and bridge days globally using Nager.Date and OpenHolidays APIs.",
+  "requestFramePermissions": []
+}

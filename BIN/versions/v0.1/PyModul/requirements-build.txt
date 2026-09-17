@@ -1,0 +1,19 @@
+# Project dependencies for APK_Vacation_Finder, on top of Tools_Central's
+# central WinPython 3.13 environment. All of these are already present
+# centrally as of 2026-09-17 - nothing needs project-local installation.
+#
+# Qt binding used by this project (declare in the PyInstaller spec and
+# exclude other installed Qt bindings, per Tools_Central/ADMIN.md):
+PySide6==6.11.0
+
+# HTTP client for Nager.Date / OpenHolidays API calls (no API key needed)
+requests==2.32.5
+
+# Excel export
+openpyxl==3.1.5
+
+# iCal export uses a small stdlib-only writer in export.py - no
+# third-party ics/icalendar package required.
+
+# Desktop packaging
+pyinstaller==6.19.0

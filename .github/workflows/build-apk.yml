@@ -1,0 +1,90 @@
+# Reusable GitHub Actions workflow template for building an Android APK
+# from a PySide6/Qt6 desktop app via `pyside6-android-deploy`.
+#
+# CANONICAL SOURCE: this file lives in Tools_Central\pyside6-android-deploy\
+# workflow-template\build-apk.yml. It is copied (not referenced remotely -
+# this is a local, personal toolchain, not a published GitHub Action) into
+# each PySide6-Android project's own .github\workflows\build-apk.yml by
+# setup-project-cloud-build.ps1 in this same folder.
+#
+# WHY A CLOUD BUILD AT ALL: pyside6-android-deploy is built on
+# python-for-android, which as of 2026 only supports Linux as the build
+# host (confirmed via Qt's own blog post and the still-open
+# kivy/python-for-android GitHub issue #2872 requesting native Windows
+# support). Without WSL2 available locally, a Linux build host has to come
+# from somewhere else - here, a GitHub Actions "ubuntu-latest" runner.
+#
+# STATUS: template/scaffold, not yet verified with a real build. The exact
+# pyside6-android-deploy CLI flags, Android NDK/SDK versions, and Python
+# version need confirming against the actual project on a first real run -
+# see the TODO markers below. Treat this as a strong starting point, not a
+# guaranteed-working recipe yet.
+
+name: Build Android APK (pyside6-android-deploy)
+
+on:
+  workflow_dispatch: {}   # manually triggered (e.g. via `gh workflow run` from trigger-and-fetch-apk.ps1)
+  push:
+    branches: [main]
+    paths:
+      - "BIN/versions/**/PyModul/**"
+      - ".github/workflows/build-apk.yml"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # TODO: confirm the Python version pyside6-android-deploy's Android
+      # wheels target for the PySide6 version this project pins
+      # (Tools_Central\Python\python\requirements.txt: PySide6==6.11.0).
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # android-actions/setup-android installs a recent Android SDK
+      # (platform-tools, cmdline-tools) - pyside6-android-deploy fetches
+      # its own required NDK version through the sdkmanager it finds here.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Linux build dependencies for python-for-android
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf automake libtool pkg-config \
+            zlib1g-dev libncurses5-dev libffi-dev \
+            build-essential ccache unzip
+
+      - name: Install PySide6 + pyside6-android-deploy
+        run: |
+          python -m pip install --upgrade pip
+          # TODO: pin to the same PySide6 version as Tools_Central's central
+          # WinPython environment, so the desktop and Android builds match.
+          python -m pip install PySide6==6.11.0
+
+      # TODO: this is the step most likely to need adjustment on the first
+      # real run - confirm the actual pyside6-android-deploy invocation
+      # (entry point file name, --name, --wheel-pyside/--wheel-shiboken
+      # paths if auto-detection doesn't find them, extra-args for NDK/SDK
+      # paths set up by android-actions/setup-android above).
+      - name: Build APK
+        working-directory: BIN/versions/v0.1/PyModul
+        run: |
+          pyside6-android-deploy --name "VacationFinder" --wheel-pyside=auto --wheel-shiboken=auto
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vacation-finder-apk
+          path: BIN/versions/v0.1/PyModul/**/*.apk
+          if-no-files-found: error
