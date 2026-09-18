@@ -84,16 +84,35 @@ jobs:
           # installed version, so install from that rather than guessing.
           python -m pip install -r "$(python -c "import PySide6, os; print(os.path.join(os.path.dirname(PySide6.__file__), 'scripts', 'requirements-android.txt'))")"
 
+      # --wheel-pyside=auto / --wheel-shiboken=auto do NOT auto-download a
+      # matching Android wheel - PySide6's own auto-resolution picked up the
+      # desktop (manylinux) wheel instead, which isn't platform-tagged for
+      # Android and made pyside6-android-deploy fail with "PySide wheel
+      # corrupted. Wheel name should end with platform name". Qt publishes
+      # prebuilt Android wheels (cp311, matching our PySide6==6.11.0 pin)
+      # directly under download.qt.io, so fetch those explicitly instead.
+      # TODO: this only builds for arm64 (aarch64) devices, which covers
+      # virtually all real Android hardware; add the android_x86_64 wheel
+      # pair here too if an emulator build is ever needed.
+      - name: Download PySide6 Android wheels
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/android-wheels"
+          curl -fL -o "$GITHUB_WORKSPACE/android-wheels/pyside6-android_aarch64.whl" \
+            "https://download.qt.io/official_releases/QtForPython/pyside6/pyside6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl"
+          curl -fL -o "$GITHUB_WORKSPACE/android-wheels/shiboken6-android_aarch64.whl" \
+            "https://download.qt.io/official_releases/QtForPython/shiboken6/shiboken6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl"
+
       # TODO: this is the step most likely to need adjustment on the first
       # real run - confirm the actual pyside6-android-deploy invocation
-      # (entry point file name, --name, --wheel-pyside/--wheel-shiboken
-      # paths if auto-detection doesn't find them, extra-args for NDK/SDK
-      # paths set up by android-actions/setup-android above).
+      # (entry point file name, --name, extra-args for NDK/SDK paths set up
+      # by android-actions/setup-android above).
       - name: Build APK
         working-directory: BIN/versions/v0.1/PyModul
         run: |
           source "$GITHUB_WORKSPACE/.venv-android-build/bin/activate"
-          pyside6-android-deploy --name "VacationFinder" --wheel-pyside=auto --wheel-shiboken=auto
+          pyside6-android-deploy --name "VacationFinder" \
+            --wheel-pyside="$GITHUB_WORKSPACE/android-wheels/pyside6-android_aarch64.whl" \
+            --wheel-shiboken="$GITHUB_WORKSPACE/android-wheels/shiboken6-android_aarch64.whl"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
