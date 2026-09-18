@@ -59,6 +59,23 @@ jobs:
         with:
           packages: platform-tools
 
+      # buildozer (used internally by pyside6-android-deploy) bootstraps its
+      # OWN, separate Android SDK under ~/.buildozer/android/platform/android-sdk
+      # rather than reusing the one android-actions/setup-android just set up
+      # (and already accepted every license for, via
+      # log-accepted-android-sdk-licenses/accept-android-sdk-licenses above).
+      # Without this, buildozer's sdkmanager silently skips build-tools
+      # ("license is not accepted"), aidl ends up missing, and the actual
+      # build fails deep inside buildozer with a generic non-zero exit code.
+      # Fix: copy the already-accepted license hashes into buildozer's SDK
+      # root too - sdkmanager tracks acceptance per SDK root via files under
+      # <sdk-root>/licenses/, so the same accepted license hash satisfies it
+      # at a second location.
+      - name: Pre-accept Android SDK licenses for buildozer's own SDK copy
+        run: |
+          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/licenses"
+          cp -r "$ANDROID_HOME/licenses/." "$HOME/.buildozer/android/platform/android-sdk/licenses/"
+
       - name: Install Linux build dependencies for python-for-android
         run: |
           sudo apt-get update
