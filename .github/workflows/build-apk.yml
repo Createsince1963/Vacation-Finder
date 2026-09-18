@@ -56,6 +56,8 @@ jobs:
       # its own required NDK version through the sdkmanager it finds here.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Linux build dependencies for python-for-android
         run: |
