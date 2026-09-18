@@ -76,6 +76,27 @@ jobs:
           mkdir -p "$HOME/.buildozer/android/platform/android-sdk/licenses"
           cp -r "$ANDROID_HOME/licenses/." "$HOME/.buildozer/android/platform/android-sdk/licenses/"
 
+      # buildozer (1.5.0, vendored by pyside6-android-deploy) hardcodes its
+      # sdkmanager lookup at <sdk_dir>/tools/bin/sdkmanager - the pre-2021
+      # Android SDK layout (see buildozer/targets/android.py,
+      # `sdkmanager_path` property). It never checks cmdline-tools/. Since
+      # we point buildozer at the already-configured $ANDROID_HOME via
+      # --sdk-path (see Build APK step below), it skips its own SDK
+      # download entirely ("SDK found") - so unless we create this legacy
+      # path ourselves, it fails with "sdkmanager is not installed" even
+      # though a perfectly good sdkmanager already exists under
+      # $ANDROID_HOME/cmdline-tools/<version>/bin/.
+      - name: Create legacy tools/bin/sdkmanager symlink for buildozer
+        run: |
+          mkdir -p "$ANDROID_HOME/tools/bin"
+          SDKMGR=$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | sort -V | tail -1)
+          if [ -z "$SDKMGR" ]; then
+            echo "::error::No sdkmanager found under \$ANDROID_HOME/cmdline-tools"
+            exit 1
+          fi
+          echo "Linking buildozer's expected tools/bin/sdkmanager -> $SDKMGR"
+          ln -sf "$SDKMGR" "$ANDROID_HOME/tools/bin/sdkmanager"
+
       - name: Install Linux build dependencies for python-for-android
         run: |
           sudo apt-get update
