@@ -129,7 +129,8 @@ jobs:
           source "$GITHUB_WORKSPACE/.venv-android-build/bin/activate"
           pyside6-android-deploy --name "VacationFinder" \
             --wheel-pyside="$GITHUB_WORKSPACE/android-wheels/pyside6-android_aarch64.whl" \
-            --wheel-shiboken="$GITHUB_WORKSPACE/android-wheels/shiboken6-android_aarch64.whl"
+            --wheel-shiboken="$GITHUB_WORKSPACE/android-wheels/shiboken6-android_aarch64.whl" \
+            --sdk-path="$ANDROID_HOME"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
