@@ -69,6 +69,12 @@ jobs:
 
       - name: Install PySide6 + pyside6-android-deploy
         run: |
+          # pyside6-android-deploy refuses to run outside a virtual
+          # environment - without one it tries to prompt interactively
+          # ("Proceed? [Y/n]"), which crashes with EOFError on a
+          # non-interactive CI runner. Use a venv so it never gets there.
+          python -m venv "$GITHUB_WORKSPACE/.venv-android-build"
+          source "$GITHUB_WORKSPACE/.venv-android-build/bin/activate"
           python -m pip install --upgrade pip
           # TODO: pin to the same PySide6 version as Tools_Central's central
           # WinPython environment, so the desktop and Android builds match.
@@ -86,6 +92,7 @@ jobs:
       - name: Build APK
         working-directory: BIN/versions/v0.1/PyModul
         run: |
+          source "$GITHUB_WORKSPACE/.venv-android-build/bin/activate"
           pyside6-android-deploy --name "VacationFinder" --wheel-pyside=auto --wheel-shiboken=auto
 
       - name: Upload APK artifact
