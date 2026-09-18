@@ -73,6 +73,10 @@ jobs:
           # TODO: pin to the same PySide6 version as Tools_Central's central
           # WinPython environment, so the desktop and Android builds match.
           python -m pip install PySide6==6.11.0
+          # pyside6-android-deploy needs these extras (jinja2, pkginfo, tqdm,
+          # packaging==24.1); PySide6 ships the exact pinned list for the
+          # installed version, so install from that rather than guessing.
+          python -m pip install -r "$(python -c "import PySide6, os; print(os.path.join(os.path.dirname(PySide6.__file__), 'scripts', 'requirements-android.txt'))")"
 
       # TODO: this is the step most likely to need adjustment on the first
       # real run - confirm the actual pyside6-android-deploy invocation
