@@ -101,7 +101,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            autoconf automake libtool pkg-config \
+            autoconf automake libtool libltdl-dev pkg-config \
             zlib1g-dev libncurses5-dev libffi-dev \
             build-essential ccache unzip
 
